@@ -1,12 +1,11 @@
-mod ai;
-mod error;
-mod wm;
-
-use std::{os::unix::io::OwnedFd, sync::Arc, time::Instant};
+use std::{fs, os::unix::io::OwnedFd, sync::Arc, time::Instant};
 
 use ::winit::platform::pump_events::PumpStatus;
-use ai::{ActionResult, AiCommand, AiEvent, AiNexus, CompositorSnapshot};
-use error::NormaError;
+use normawm::{
+    ai::{format_ai_window_digest, ActionResult, AiCommand, AiEvent, AiNexus, CompositorSnapshot},
+    error::NormaError,
+    wm::TilingState,
+};
 use smithay::{
     backend::{
         input::{InputEvent, KeyboardKeyEvent},
@@ -52,9 +51,9 @@ use wayland_server::{
     },
     Client, ListeningSocket,
 };
-use wm::TilingState;
 
 const DEEP_GRAY: [f32; 4] = [0.13, 0.13, 0.14, 1.0];
+const AI_PREVIEW_PATH: &str = "target/ai-input-preview.txt";
 
 struct NormaApp {
     compositor_state: CompositorState,
@@ -80,6 +79,28 @@ impl NormaApp {
             clear_color: self.clear_color,
         }
     }
+
+    fn build_ai_preview(&self) -> String {
+        let digest = self.wm_state.build_ai_window_digest("main");
+        format_ai_window_digest(&digest)
+    }
+
+    fn publish_ai_preview(&self, reason: &str) {
+        let preview = self.build_ai_preview();
+
+        self.ai_nexus.emit(AiEvent::PromptPreview(preview.clone()));
+
+        info!(target: "normawm::ai_preview", reason = reason, "\n{preview}");
+
+        if let Err(error) = fs::write(AI_PREVIEW_PATH, &preview) {
+            warn!(
+                target: "normawm::ai_preview",
+                path = AI_PREVIEW_PATH,
+                %error,
+                "failed to persist AI input preview"
+            );
+        }
+    }
 }
 
 impl BufferHandler for NormaApp {
@@ -96,6 +117,7 @@ impl XdgShellHandler for NormaApp {
         self.ai_nexus.emit(AiEvent::ActionResult(ActionResult::ok(
             "registered new toplevel surface",
         )));
+        self.publish_ai_preview("new_toplevel");
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
@@ -103,6 +125,7 @@ impl XdgShellHandler for NormaApp {
     fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         self.wm_state.focus_toplevel(&surface);
         self.wm_state.refresh();
+        self.publish_ai_preview("move_request");
     }
 
     fn resize_request(
@@ -114,6 +137,7 @@ impl XdgShellHandler for NormaApp {
     ) {
         self.wm_state.focus_toplevel(&surface);
         self.wm_state.refresh();
+        self.publish_ai_preview("resize_request");
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
@@ -129,6 +153,7 @@ impl XdgShellHandler for NormaApp {
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.wm_state.focus_toplevel(&surface);
         self.wm_state.refresh();
+        self.publish_ai_preview("maximize_request");
     }
 
     fn fullscreen_request(
@@ -138,10 +163,20 @@ impl XdgShellHandler for NormaApp {
     ) {
         self.wm_state.focus_toplevel(&surface);
         self.wm_state.refresh();
+        self.publish_ai_preview("fullscreen_request");
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.wm_state.remove_toplevel(&surface);
+        self.publish_ai_preview("toplevel_destroyed");
+    }
+
+    fn app_id_changed(&mut self, _surface: ToplevelSurface) {
+        self.publish_ai_preview("app_id_changed");
+    }
+
+    fn title_changed(&mut self, _surface: ToplevelSurface) {
+        self.publish_ai_preview("title_changed");
     }
 }
 
@@ -285,6 +320,12 @@ fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
         socket = %socket_name,
         "NormaWM nested compositor started. Launch clients with WAYLAND_DISPLAY={socket_name}"
     );
+    info!(
+        target: "normawm::ai_preview",
+        path = AI_PREVIEW_PATH,
+        "AI input preview will be mirrored to this file"
+    );
+    state.publish_ai_preview("startup");
 
     loop {
         let status = winit.dispatch_new_events(|event| match event {
@@ -316,15 +357,21 @@ fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
             PumpStatus::Exit(_) => return Ok(()),
         }
 
-        state.wm_state.prune_dead_windows();
-        state
+        if state.wm_state.prune_dead_windows() {
+            state.publish_ai_preview("prune_dead_windows");
+        }
+        if state
             .wm_state
-            .set_output_size(to_logical_size(backend.window_size()));
+            .set_output_size(to_logical_size(backend.window_size()))
+        {
+            state.publish_ai_preview("output_resized");
+        }
 
         for command in state.ai_nexus.drain_commands() {
             match command {
                 AiCommand::RequestSnapshot => {
                     state.ai_nexus.emit(AiEvent::Snapshot(state.snapshot()));
+                    state.publish_ai_preview("request_snapshot");
                 }
                 AiCommand::SetClearColor(color) => {
                     state.clear_color = color;
@@ -338,6 +385,7 @@ fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
                         state.ai_nexus.emit(AiEvent::ActionResult(ActionResult::ok(
                             "focused the first toplevel surface",
                         )));
+                        state.publish_ai_preview("focus_first_window");
                     } else {
                         state.ai_nexus.emit(AiEvent::ActionResult(ActionResult::err(
                             "no toplevel surfaces are available yet",

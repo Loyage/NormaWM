@@ -10,6 +10,63 @@ pub enum AiCommand {
     Shutdown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiWindowRecord {
+    pub window_id: String,
+    pub role: &'static str,
+    pub title: Option<String>,
+    pub app_id: Option<String>,
+    pub focused: bool,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiWindowDigest {
+    pub workspace: String,
+    pub output_width: i32,
+    pub output_height: i32,
+    pub window_count: usize,
+    pub windows: Vec<AiWindowRecord>,
+}
+
+/// 将窗口摘要整理成一段可直接展示、记录或发送给 AI 的纯文本输入。
+///
+/// 这里故意使用稳定、扁平的行文本格式，而不是更复杂的结构化协议，
+/// 方便在测试中直接断言内容，也方便后续先把它接到 prompt 再逐步升级。
+pub fn format_ai_window_digest(digest: &AiWindowDigest) -> String {
+    let mut lines = vec![
+        "NormaWM window digest for AI".to_string(),
+        format!("workspace: {}", digest.workspace),
+        format!("output: {}x{}", digest.output_width, digest.output_height),
+        format!("window_count: {}", digest.window_count),
+        "windows:".to_string(),
+    ];
+
+    if digest.windows.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for window in &digest.windows {
+            lines.push(format!(
+                "- id={} role={} title={} app_id={} focused={} geometry=({}, {}) {}x{}",
+                window.window_id,
+                window.role,
+                window.title.as_deref().unwrap_or("<unset>"),
+                window.app_id.as_deref().unwrap_or("<unset>"),
+                window.focused,
+                window.x,
+                window.y,
+                window.width,
+                window.height
+            ));
+        }
+    }
+
+    lines.join("\n")
+}
+
 #[derive(Debug, Clone)]
 pub struct CompositorSnapshot {
     pub backend: &'static str,
@@ -45,6 +102,7 @@ impl ActionResult {
 pub enum AiEvent {
     Snapshot(CompositorSnapshot),
     ActionResult(ActionResult),
+    PromptPreview(String),
 }
 
 pub struct AiNexus {

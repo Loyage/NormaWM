@@ -159,6 +159,10 @@ where
         .expect("failed to present softbuffer frame");
 }
 
+/// 手动推进一次标题状态，用于验证 compositor 是否接收到了 title 更新。
+///
+/// 和定时器驱动的标题轮换共用同一条逻辑，这样键盘快捷键与自动更新
+/// 不会分叉出两套行为。
 fn advance_title(window: &Window, title_index: &mut usize) {
     *title_index = (*title_index + 1) % TITLE_VARIANTS.len();
     window.set_title(&format_title(*title_index));
