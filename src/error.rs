@@ -1,5 +1,14 @@
+//! `NormaWM` 的错误分层定义。
+//!
+//! 当前错误类型主要覆盖启动、渲染和 Wayland client 管理三个阶段。
+//! 设计目标不是追求最细粒度，而是先把“错误发生在哪一层”说清楚，
+//! 方便在 CLI 和日志里快速定位问题。
+
 use thiserror::Error;
 
+/// compositor 主流程中的领域错误。
+///
+/// 每个变体都对应一个较清晰的失败阶段，方便后续再细分成更结构化的子错误。
 #[derive(Debug, Error)]
 pub enum NormaError {
     #[error("failed to create wayland display: {0}")]
