@@ -9,6 +9,7 @@ use crate::{
     ai::{ActionResult, AiCommand, AiEvent, AiNexus},
     compositor::{ClientState, NormaApp, AI_PREVIEW_PATH, DEEP_GRAY},
     error::NormaError,
+    monitor::spawn_monitor_window,
     wm::TilingState,
 };
 use ::winit::platform::pump_events::PumpStatus;
@@ -93,6 +94,7 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
         socket_name: socket_name.clone(),
         shutdown_requested: false,
         wm_state: TilingState::new(initial_size),
+        monitor: spawn_monitor_window(),
     };
     let start_time = Instant::now();
     let mut clients = Vec::new();

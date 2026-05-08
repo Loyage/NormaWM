@@ -7,6 +7,7 @@ use std::{fs, os::unix::io::OwnedFd};
 
 use crate::{
     ai::{format_ai_window_digest, ActionResult, AiEvent, AiNexus, CompositorSnapshot},
+    monitor::{MonitorHandle, MonitorSnapshot},
     wm::TilingState,
 };
 use smithay::{
@@ -56,6 +57,7 @@ pub struct NormaApp {
     pub socket_name: String,
     pub shutdown_requested: bool,
     pub wm_state: TilingState,
+    pub monitor: MonitorHandle,
 }
 
 impl NormaApp {
@@ -83,12 +85,22 @@ impl NormaApp {
     /// 当前有两个观察出口：
     /// 1. 通过 `AiEvent::PromptPreview` 发给外部接入端
     /// 2. 同步打印到终端并写入固定文件，便于人工检查
+    /// 3. 推送到内部监控窗口，实时显示 AI / WM 运行状态
     pub fn publish_ai_preview(&self, reason: &str) {
         let preview = self.build_ai_preview();
 
         self.ai_nexus.emit(AiEvent::PromptPreview(preview.clone()));
 
         info!(target: "normawm::ai_preview", reason = reason, "\n{preview}");
+        self.monitor.update(MonitorSnapshot {
+            title: format!("NormaWM Monitor • {} windows", self.wm_state.len()),
+            body: format!(
+                "AI status: local nexus active\nlast update: {reason}\nsocket: {}\nmanaged windows: {}\n\n{}",
+                self.socket_name,
+                self.wm_state.len(),
+                preview
+            ),
+        });
 
         if let Err(error) = fs::write(AI_PREVIEW_PATH, &preview) {
             warn!(

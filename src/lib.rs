@@ -7,5 +7,6 @@
 pub mod ai;
 pub mod compositor;
 pub mod error;
+pub mod monitor;
 pub mod runtime;
 pub mod wm;
