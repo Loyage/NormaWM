@@ -8,7 +8,10 @@
 //!
 //! 它的目标不是一开始就做完整 WM，而是先把“布局状态”和“渲染/协议层”分开。
 
-use crate::ai::{AiWindowDigest, AiWindowRecord};
+use crate::{
+    ai::{AiWindowDigest, AiWindowRecord},
+    control::ControlWindowInfo,
+};
 use smithay::{
     utils::{Logical, Rectangle, Size},
     wayland::{
@@ -29,6 +32,7 @@ const MIN_TILE_SIZE: i32 = 96;
 /// - 布局计算出的逻辑坐标系几何
 #[derive(Debug, Clone)]
 pub struct ManagedToplevel {
+    pub id: String,
     pub surface: ToplevelSurface,
     pub geometry: Rectangle<i32, Logical>,
     pub workspace: u8,
@@ -45,6 +49,7 @@ pub struct TilingState {
     focused: Option<usize>,
     active_workspace: u8,
     next_workspace: u8,
+    next_window_id: u64,
 }
 
 /// 与 Wayland 资源弱耦合的窗口布局快照。
@@ -101,6 +106,7 @@ impl TilingState {
             focused: None,
             active_workspace: 0,
             next_workspace: 1,
+            next_window_id: 1,
         }
     }
 
@@ -129,6 +135,12 @@ impl TilingState {
         self.focused
             .and_then(|index| self.windows.get(index))
             .map(|window| window.surface.wl_surface().clone())
+    }
+
+    pub fn focused_window_id(&self) -> Option<&str> {
+        self.focused
+            .and_then(|index| self.windows.get(index))
+            .map(|window| window.id.as_str())
     }
 
     /// 将焦点移动到第一个窗口。
@@ -171,6 +183,26 @@ impl TilingState {
         self.relayout();
         self.configure_windows();
         true
+    }
+
+    pub fn focus_window_id(&mut self, window_id: &str) -> Option<WlSurface> {
+        let index = self
+            .windows
+            .iter()
+            .position(|window| window.id == window_id && window.surface.alive())?;
+
+        self.active_workspace = self.windows[index].workspace;
+        self.focused = Some(index);
+        self.relayout();
+        self.configure_windows();
+        self.focused_surface()
+    }
+
+    pub fn surface_for_window_id(&self, window_id: &str) -> Option<WlSurface> {
+        self.windows
+            .iter()
+            .find(|window| window.id == window_id && window.surface.alive())
+            .map(|window| window.surface.wl_surface().clone())
     }
 
     pub fn switch_workspace(&mut self, workspace: u8) -> Option<WlSurface> {
@@ -217,7 +249,11 @@ impl TilingState {
             self.next_workspace
         };
 
+        let id = format!("window-{}", self.next_window_id);
+        self.next_window_id += 1;
+
         self.windows.push(ManagedToplevel {
+            id,
             surface,
             geometry: Rectangle::from_size((0, 0).into()),
             workspace,
@@ -314,7 +350,7 @@ impl TilingState {
                 window.workspace == self.active_workspace && !window.human_control
             })
             .map(|(index, window)| WindowLayoutSnapshot {
-                window_id: format!("window-{}", index + 1),
+                window_id: window.id.clone(),
                 role: "xdg_toplevel",
                 title: window_title(&window.surface),
                 app_id: window_app_id(&window.surface),
@@ -324,6 +360,21 @@ impl TilingState {
             .collect::<Vec<_>>();
 
         build_ai_window_digest_from_layout(workspace, self.output_size, &windows)
+    }
+
+    pub fn control_windows(&self) -> Vec<ControlWindowInfo> {
+        self.windows
+            .iter()
+            .enumerate()
+            .map(|(index, window)| ControlWindowInfo {
+                id: window.id.clone(),
+                workspace: window.workspace,
+                title: window_title(&window.surface),
+                app_id: window_app_id(&window.surface),
+                focused: self.focused == Some(index),
+                human_control: window.human_control,
+            })
+            .collect()
     }
 
     /// 在窗口集合变化后，把焦点索引修正到合法范围。

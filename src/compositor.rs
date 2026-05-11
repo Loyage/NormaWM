@@ -3,7 +3,7 @@
 //! 这个模块只关心“系统当前是什么状态”以及“收到协议/输入事件后如何更新状态”。
 //! 它不负责驱动主循环本身；主循环放在 `runtime.rs`。
 
-use std::{fs, os::unix::io::OwnedFd};
+use std::{fs, fs::File, io::Write, os::unix::io::OwnedFd};
 
 use crate::{
     ai::{format_ai_window_digest, ActionResult, AiEvent, AiNexus, CompositorSnapshot},
@@ -88,6 +88,7 @@ impl NormaApp {
             managed_windows: self.wm_state.len(),
             ai_paused: self.ai_paused,
             ai_task_status: self.ai_task_status.clone(),
+            windows: self.wm_state.control_windows(),
             preview: self.build_ai_preview(),
         }
     }
@@ -207,7 +208,21 @@ impl XdgShellHandler for NormaApp {
 }
 
 impl SelectionHandler for NormaApp {
-    type SelectionUserData = ();
+    type SelectionUserData = String;
+
+    fn send_selection(
+        &mut self,
+        _ty: smithay::wayland::selection::SelectionTarget,
+        _mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        let mut file = File::from(fd);
+        if let Err(error) = file.write_all(user_data.as_bytes()) {
+            warn!(%error, "failed to write compositor-provided selection");
+        }
+    }
 }
 
 impl DataDeviceHandler for NormaApp {

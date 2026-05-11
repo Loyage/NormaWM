@@ -36,12 +36,13 @@ use smithay::{
     utils::{Logical, Rectangle, Size, Transform},
     wayland::{
         compositor::{with_surface_tree_downward, SurfaceAttributes, TraversalAction},
+        selection::data_device::{set_data_device_focus, set_data_device_selection},
         shell::xdg::XdgShellState,
         shm::ShmState,
     },
 };
 use tracing::{info, warn};
-use wayland_server::{protocol::wl_surface, ListeningSocket};
+use wayland_server::{protocol::wl_surface, ListeningSocket, Resource};
 
 /// 初始化全局 tracing subscriber。
 ///
@@ -192,32 +193,104 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
 
         // 处理来自本地人类控制面的命令。人类控制优先级高于 AI 自动控制。
         let mut should_publish_control_status = false;
-        for command in control_server.poll_commands() {
-            match command {
+        for request in control_server.poll_commands() {
+            let client_id = request.client_id;
+            match request.command {
                 ControlCommand::RequestStatus => {
+                    control_server.send_status_to(client_id, &state.control_status());
+                    should_publish_control_status = false;
+                }
+                ControlCommand::RequestWindows => {
+                    control_server.send_text_to(client_id, &format_windows(&state));
+                }
+                ControlCommand::RequestWorkspaces => {
+                    control_server.send_text_to(client_id, &format_workspaces(&state));
+                }
+                ControlCommand::RequestFocusedWindow => {
+                    control_server.send_text_to(client_id, &format_focused_window(&state));
+                }
+                ControlCommand::FocusWindow(window_id) => {
+                    if let Some(surface) = state.wm_state.focus_window_id(&window_id) {
+                        keyboard.set_focus(&mut state, Some(surface), 0.into());
+                        control_server.send_result_to(
+                            client_id,
+                            true,
+                            &format!("focused {window_id}"),
+                        );
+                        state.publish_ai_preview("human_focus_window");
+                    } else {
+                        control_server.send_result_to(
+                            client_id,
+                            false,
+                            &format!("unknown window id: {window_id}"),
+                        );
+                    }
+                    should_publish_control_status = true;
+                }
+                ControlCommand::SwitchWorkspace(workspace) => {
+                    let focus = state.wm_state.switch_workspace(workspace);
+                    keyboard.set_focus(&mut state, focus, 0.into());
+                    control_server.send_result_to(
+                        client_id,
+                        true,
+                        &format!("switched to workspace {workspace}"),
+                    );
+                    state.publish_ai_preview("human_switch_workspace");
+                    should_publish_control_status = true;
+                }
+                ControlCommand::InjectText { target, text } => {
+                    let result = inject_text_into_window(
+                        &dh,
+                        &mut state,
+                        &keyboard,
+                        target.as_deref(),
+                        text,
+                        start_time.elapsed().as_millis() as u32,
+                    );
+                    match result {
+                        Ok(window_id) => {
+                            control_server.send_result_to(
+                                client_id,
+                                true,
+                                &format!("input text into {window_id}"),
+                            );
+                        }
+                        Err(error) => {
+                            control_server.send_result_to(client_id, false, &error);
+                        }
+                    }
                     should_publish_control_status = true;
                 }
                 ControlCommand::FocusFirstWindow => {
                     if let Some(surface) = state.wm_state.focus_first() {
                         keyboard.set_focus(&mut state, Some(surface), 0.into());
-                        control_server.broadcast_result(true, "focused the first toplevel surface");
+                        control_server.send_result_to(
+                            client_id,
+                            true,
+                            "focused the first toplevel surface",
+                        );
                         state.publish_ai_preview("human_focus_first_window");
                     } else {
-                        control_server
-                            .broadcast_result(false, "no toplevel surfaces are available");
+                        control_server.send_result_to(
+                            client_id,
+                            false,
+                            "no toplevel surfaces are available",
+                        );
                     }
                     should_publish_control_status = true;
                 }
                 ControlCommand::Launch(command) => {
                     match launch_wayland_client(&command, &state.socket_name) {
                         Ok(pid) => {
-                            control_server.broadcast_result(
+                            control_server.send_result_to(
+                                client_id,
                                 true,
                                 &format!("launched {} as pid {pid}", command.join(" ")),
                             );
                         }
                         Err(error) => {
-                            control_server.broadcast_result(
+                            control_server.send_result_to(
+                                client_id,
                                 false,
                                 &format!("failed to launch {}: {error}", command.join(" ")),
                             );
@@ -228,23 +301,23 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
                 ControlCommand::PauseAi => {
                     state.ai_paused = true;
                     state.ai_task_status = "paused by human control".to_string();
-                    control_server.broadcast_result(true, "AI control paused");
+                    control_server.send_result_to(client_id, true, "AI control paused");
                     should_publish_control_status = true;
                 }
                 ControlCommand::ResumeAi => {
                     state.ai_paused = false;
                     state.ai_task_status = "idle".to_string();
-                    control_server.broadcast_result(true, "AI control resumed");
+                    control_server.send_result_to(client_id, true, "AI control resumed");
                     should_publish_control_status = true;
                 }
                 ControlCommand::CancelAiTasks => {
                     state.ai_task_status = "cancelled by human control".to_string();
-                    control_server.broadcast_result(true, "AI tasks marked cancelled");
+                    control_server.send_result_to(client_id, true, "AI tasks marked cancelled");
                     should_publish_control_status = true;
                 }
                 ControlCommand::Shutdown => {
                     state.shutdown_requested = true;
-                    control_server.broadcast_result(true, "shutdown requested");
+                    control_server.send_result_to(client_id, true, "shutdown requested");
                     should_publish_control_status = true;
                 }
             }
@@ -387,6 +460,131 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
     }
 }
 
+fn inject_text_into_window(
+    dh: &wayland_server::DisplayHandle,
+    state: &mut NormaApp,
+    keyboard: &smithay::input::keyboard::KeyboardHandle<NormaApp>,
+    target: Option<&str>,
+    text: String,
+    time: u32,
+) -> Result<String, String> {
+    let window_id = match target {
+        Some(window_id) => window_id.to_string(),
+        None => state
+            .wm_state
+            .focused_window_id()
+            .ok_or_else(|| "no focused window is available".to_string())?
+            .to_string(),
+    };
+
+    let Some(surface) = state.wm_state.focus_window_id(&window_id) else {
+        return Err(format!("unknown window id: {window_id}"));
+    };
+    let Some(client) = surface.client() else {
+        return Err(format!("target window is no longer alive: {window_id}"));
+    };
+
+    keyboard.set_focus(state, Some(surface), 0.into());
+    set_data_device_focus(dh, &state.seat, Some(client));
+    set_data_device_selection(
+        dh,
+        &state.seat,
+        vec![
+            "text/plain;charset=utf-8".to_string(),
+            "text/plain".to_string(),
+        ],
+        text,
+    );
+    send_ctrl_v(state, keyboard, time);
+    state.publish_ai_preview("control_input_text");
+
+    Ok(window_id)
+}
+
+fn send_ctrl_v(
+    state: &mut NormaApp,
+    keyboard: &smithay::input::keyboard::KeyboardHandle<NormaApp>,
+    time: u32,
+) {
+    keyboard.input::<(), _>(
+        state,
+        KEY_LEFTCTRL,
+        KeyState::Pressed,
+        0.into(),
+        time,
+        |_, _, _| FilterResult::Forward,
+    );
+    keyboard.input::<(), _>(
+        state,
+        KEY_V,
+        KeyState::Pressed,
+        0.into(),
+        time,
+        |_, _, _| FilterResult::Forward,
+    );
+    keyboard.input::<(), _>(
+        state,
+        KEY_V,
+        KeyState::Released,
+        0.into(),
+        time,
+        |_, _, _| FilterResult::Forward,
+    );
+    keyboard.input::<(), _>(
+        state,
+        KEY_LEFTCTRL,
+        KeyState::Released,
+        0.into(),
+        time,
+        |_, _, _| FilterResult::Forward,
+    );
+}
+
+fn format_windows(state: &NormaApp) -> String {
+    let windows = state.wm_state.control_windows();
+    if windows.is_empty() {
+        return "no windows".to_string();
+    }
+
+    windows
+        .into_iter()
+        .map(|window| {
+            format!(
+                "{} workspace={} focused={} title={} app_id={} human_control={}",
+                window.id,
+                window.workspace,
+                window.focused,
+                window.title.as_deref().unwrap_or("<unset>"),
+                window.app_id.as_deref().unwrap_or("<unset>"),
+                window.human_control
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_workspaces(state: &NormaApp) -> String {
+    let active = state.wm_state.active_workspace();
+    (0..=9)
+        .map(|workspace| {
+            if workspace == active {
+                format!("* {workspace}")
+            } else {
+                format!("  {workspace}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_focused_window(state: &NormaApp) -> String {
+    state
+        .wm_state
+        .focused_window_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| "no focused window".to_string())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum WorkspaceHotkeyAction {
     Switch(u8),
@@ -484,6 +682,8 @@ const KEY_9: Keycode = xkb_keycode(10);
 const KEY_0: Keycode = xkb_keycode(11);
 const KEY_J: Keycode = xkb_keycode(36);
 const KEY_K: Keycode = xkb_keycode(37);
+const KEY_V: Keycode = xkb_keycode(47);
+const KEY_LEFTCTRL: Keycode = xkb_keycode(29);
 const KEY_LEFTALT: Keycode = xkb_keycode(56);
 const KEY_RIGHTALT: Keycode = xkb_keycode(100);
 const KEY_LEFTMETA: Keycode = xkb_keycode(125);
