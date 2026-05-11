@@ -31,6 +31,8 @@ const MIN_TILE_SIZE: i32 = 96;
 pub struct ManagedToplevel {
     pub surface: ToplevelSurface,
     pub geometry: Rectangle<i32, Logical>,
+    pub workspace: u8,
+    pub human_control: bool,
 }
 
 /// 当前最小平铺窗口管理器的内部状态。
@@ -41,6 +43,8 @@ pub struct TilingState {
     output_size: Size<i32, Logical>,
     windows: Vec<ManagedToplevel>,
     focused: Option<usize>,
+    active_workspace: u8,
+    next_workspace: u8,
 }
 
 /// 与 Wayland 资源弱耦合的窗口布局快照。
@@ -95,6 +99,8 @@ impl TilingState {
             output_size,
             windows: Vec::new(),
             focused: None,
+            active_workspace: 0,
+            next_workspace: 1,
         }
     }
 
@@ -103,9 +109,19 @@ impl TilingState {
         self.windows.len()
     }
 
+    pub fn active_workspace(&self) -> u8 {
+        self.active_workspace
+    }
+
     /// 只读访问当前受管窗口集合，主要给渲染层使用。
     pub fn windows(&self) -> &[ManagedToplevel] {
         &self.windows
+    }
+
+    pub fn visible_windows(&self) -> impl Iterator<Item = &ManagedToplevel> {
+        self.windows
+            .iter()
+            .filter(|window| window.workspace == self.active_workspace)
     }
 
     /// 取出当前焦点窗口的 `wl_surface`，方便输入系统同步键盘焦点。
@@ -119,16 +135,17 @@ impl TilingState {
     ///
     /// 这个操作会同时刷新客户端的 activated 状态，因此不仅仅是改一个索引。
     pub fn focus_first(&mut self) -> Option<WlSurface> {
-        if self.windows.is_empty() {
+        let Some(index) = self.first_visible_index() else {
             self.focused = None;
+            self.configure_windows();
             return None;
-        }
+        };
 
-        if self.focused == Some(0) {
+        if self.focused == Some(index) {
             return self.focused_surface();
         }
 
-        self.focused = Some(0);
+        self.focused = Some(index);
         self.configure_windows();
         self.focused_surface()
     }
@@ -145,13 +162,32 @@ impl TilingState {
             return false;
         };
 
-        if self.focused == Some(index) {
+        if self.focused == Some(index) && self.active_workspace == self.windows[index].workspace {
             return false;
         }
 
+        self.active_workspace = self.windows[index].workspace;
         self.focused = Some(index);
+        self.relayout();
         self.configure_windows();
         true
+    }
+
+    pub fn switch_workspace(&mut self, workspace: u8) -> Option<WlSurface> {
+        if self.active_workspace == workspace {
+            return self.focused_surface();
+        }
+
+        self.active_workspace = workspace;
+        self.focused = self.first_visible_index();
+        self.relayout();
+        self.configure_windows();
+        self.focused_surface()
+    }
+
+    pub fn switch_workspace_relative(&mut self, delta: i8) -> Option<WlSurface> {
+        let next = (self.active_workspace as i16 + delta as i16).clamp(0, 9) as u8;
+        self.switch_workspace(next)
     }
 
     /// 更新输出尺寸，并在尺寸变化时触发布局重排。
@@ -174,10 +210,23 @@ impl TilingState {
             return;
         }
 
+        let human_control = is_human_control_surface(&surface);
+        let workspace = if human_control {
+            0
+        } else {
+            self.next_workspace
+        };
+
         self.windows.push(ManagedToplevel {
             surface,
             geometry: Rectangle::from_size((0, 0).into()),
+            workspace,
+            human_control,
         });
+        self.active_workspace = workspace;
+        if !human_control {
+            self.next_workspace = (self.next_workspace + 1).min(9);
+        }
         self.focused = Some(self.windows.len() - 1);
         self.relayout();
         self.configure_windows();
@@ -229,15 +278,41 @@ impl TilingState {
         self.configure_windows();
     }
 
+    pub fn refresh_toplevel_metadata(&mut self, surface: &ToplevelSurface) -> bool {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|window| &window.surface == surface)
+        else {
+            return false;
+        };
+
+        if self.windows[index].human_control || !is_human_control_surface(surface) {
+            return false;
+        }
+
+        self.windows[index].human_control = true;
+        self.windows[index].workspace = 0;
+        self.active_workspace = 0;
+        self.focused = Some(index);
+        self.relayout();
+        self.configure_windows();
+        true
+    }
+
     /// 从当前 `TilingState` 中导出一份 AI 摘要。
     ///
     /// 这里刻意不暴露底层 `ToplevelSurface` 给 AI，而是只输出窗口编号、
     /// 焦点和几何信息，保持 compositor 内部可变状态与 AI 输入边界解耦。
-    pub fn build_ai_window_digest(&self, workspace: &str) -> AiWindowDigest {
+    pub fn build_ai_window_digest(&self) -> AiWindowDigest {
+        let workspace = format!("{}", self.active_workspace);
         let windows = self
             .windows
             .iter()
             .enumerate()
+            .filter(|(_, window)| {
+                window.workspace == self.active_workspace && !window.human_control
+            })
             .map(|(index, window)| WindowLayoutSnapshot {
                 window_id: format!("window-{}", index + 1),
                 role: "xdg_toplevel",
@@ -253,10 +328,20 @@ impl TilingState {
 
     /// 在窗口集合变化后，把焦点索引修正到合法范围。
     fn normalize_focus(&mut self) {
-        self.focused = match self.windows.len() {
-            0 => None,
-            len => self.focused.filter(|index| *index < len).or(Some(len - 1)),
-        };
+        self.focused = self
+            .focused
+            .filter(|index| {
+                self.windows
+                    .get(*index)
+                    .is_some_and(|window| window.workspace == self.active_workspace)
+            })
+            .or_else(|| self.first_visible_index());
+    }
+
+    fn first_visible_index(&self) -> Option<usize> {
+        self.windows
+            .iter()
+            .position(|window| window.workspace == self.active_workspace)
     }
 
     /// 依据当前输出尺寸，把所有窗口重新排成最小纵向平铺布局。
@@ -265,13 +350,21 @@ impl TilingState {
     /// 并保留 outer/inner gap。这样实现简单，但已经足够验证
     /// `xdg_toplevel` 的 configure、focus 和 render offset 路径。
     fn relayout(&mut self) {
-        if self.windows.is_empty() {
+        if self
+            .windows
+            .iter()
+            .all(|window| window.workspace != self.active_workspace)
+        {
             return;
         }
 
         let usable_width = (self.output_size.w - OUTER_GAP * 2).max(MIN_TILE_SIZE);
         let usable_height = (self.output_size.h - OUTER_GAP * 2).max(MIN_TILE_SIZE);
-        let window_count = self.windows.len() as i32;
+        let window_count = self
+            .windows
+            .iter()
+            .filter(|window| window.workspace == self.active_workspace)
+            .count() as i32;
         let total_gaps = INNER_GAP.saturating_mul(window_count.saturating_sub(1));
         let tile_height = ((usable_height - total_gaps).max(MIN_TILE_SIZE)) / window_count.max(1);
         let tile_height = tile_height.max(MIN_TILE_SIZE);
@@ -279,12 +372,18 @@ impl TilingState {
         let mut next_y = OUTER_GAP;
         let remainder = (usable_height - total_gaps - tile_height * window_count).max(0);
 
-        for (index, window) in self.windows.iter_mut().enumerate() {
-            let extra_row = i32::from((index as i32) < remainder);
+        let mut visible_index = 0;
+        for window in self
+            .windows
+            .iter_mut()
+            .filter(|window| window.workspace == self.active_workspace)
+        {
+            let extra_row = i32::from(visible_index < remainder);
             let height = (tile_height + extra_row).max(MIN_TILE_SIZE);
             window.geometry =
                 Rectangle::new((OUTER_GAP, next_y).into(), (usable_width, height).into());
             next_y += height + INNER_GAP;
+            visible_index += 1;
         }
     }
 
@@ -340,4 +439,15 @@ fn window_app_id(surface: &ToplevelSurface) -> Option<String> {
                     .and_then(|guard| guard.app_id.clone())
             })
     })
+}
+
+fn is_human_control_surface(surface: &ToplevelSurface) -> bool {
+    let title_matches = window_title(surface)
+        .as_deref()
+        .is_some_and(|title| title.contains("NormaWM Human Control"));
+    let app_id_matches = window_app_id(surface)
+        .as_deref()
+        .is_some_and(|app_id| app_id.contains("normawm-control"));
+
+    title_matches || app_id_matches
 }

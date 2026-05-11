@@ -3,6 +3,7 @@ name = "normawm"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80.1"
+default-run = "normawm"
 description = "NormaWM is a Smithay-based nested Wayland compositor with an AI-ready control plane."
 publish = false
 

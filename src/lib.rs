@@ -6,6 +6,7 @@
 
 pub mod ai;
 pub mod compositor;
+pub mod control;
 pub mod error;
 pub mod monitor;
 pub mod runtime;

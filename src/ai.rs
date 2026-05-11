@@ -90,7 +90,7 @@ pub fn format_ai_window_digest(digest: &AiWindowDigest) -> String {
 pub struct CompositorSnapshot {
     pub backend: &'static str,
     pub socket_name: String,
-    pub workspace: &'static str,
+    pub workspace: String,
     pub toplevel_count: usize,
     pub clear_color: [f32; 4],
 }

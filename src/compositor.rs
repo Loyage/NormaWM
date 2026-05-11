@@ -7,7 +7,7 @@ use std::{fs, os::unix::io::OwnedFd};
 
 use crate::{
     ai::{format_ai_window_digest, ActionResult, AiEvent, AiNexus, CompositorSnapshot},
-    monitor::{MonitorHandle, MonitorSnapshot},
+    control::ControlStatus,
     wm::TilingState,
 };
 use smithay::{
@@ -56,8 +56,9 @@ pub struct NormaApp {
     pub clear_color: [f32; 4],
     pub socket_name: String,
     pub shutdown_requested: bool,
+    pub ai_paused: bool,
+    pub ai_task_status: String,
     pub wm_state: TilingState,
-    pub monitor: MonitorHandle,
 }
 
 impl NormaApp {
@@ -68,7 +69,7 @@ impl NormaApp {
         CompositorSnapshot {
             backend: "winit",
             socket_name: self.socket_name.clone(),
-            workspace: "main",
+            workspace: self.wm_state.active_workspace().to_string(),
             toplevel_count: self.wm_state.len(),
             clear_color: self.clear_color,
         }
@@ -76,8 +77,19 @@ impl NormaApp {
 
     /// 基于当前窗口管理状态生成一段完整的 AI 输入预览。
     pub fn build_ai_preview(&self) -> String {
-        let digest = self.wm_state.build_ai_window_digest("main");
+        let digest = self.wm_state.build_ai_window_digest();
         format_ai_window_digest(&digest)
+    }
+
+    pub fn control_status(&self) -> ControlStatus {
+        ControlStatus {
+            socket_name: self.socket_name.clone(),
+            workspace: self.wm_state.active_workspace(),
+            managed_windows: self.wm_state.len(),
+            ai_paused: self.ai_paused,
+            ai_task_status: self.ai_task_status.clone(),
+            preview: self.build_ai_preview(),
+        }
     }
 
     /// 在窗口状态变化时向“AI 前向输入”观察面发布最新预览。
@@ -85,22 +97,12 @@ impl NormaApp {
     /// 当前有两个观察出口：
     /// 1. 通过 `AiEvent::PromptPreview` 发给外部接入端
     /// 2. 同步打印到终端并写入固定文件，便于人工检查
-    /// 3. 推送到内部监控窗口，实时显示 AI / WM 运行状态
     pub fn publish_ai_preview(&self, reason: &str) {
         let preview = self.build_ai_preview();
 
         self.ai_nexus.emit(AiEvent::PromptPreview(preview.clone()));
 
         info!(target: "normawm::ai_preview", reason = reason, "\n{preview}");
-        self.monitor.update(MonitorSnapshot {
-            title: format!("NormaWM Monitor • {} windows", self.wm_state.len()),
-            body: format!(
-                "AI status: local nexus active\nlast update: {reason}\nsocket: {}\nmanaged windows: {}\n\n{}",
-                self.socket_name,
-                self.wm_state.len(),
-                preview
-            ),
-        });
 
         if let Err(error) = fs::write(AI_PREVIEW_PATH, &preview) {
             warn!(
@@ -192,12 +194,14 @@ impl XdgShellHandler for NormaApp {
     }
 
     /// 客户端更新 app_id 时，重新导出 AI 预览。
-    fn app_id_changed(&mut self, _surface: ToplevelSurface) {
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        self.wm_state.refresh_toplevel_metadata(&surface);
         self.publish_ai_preview("app_id_changed");
     }
 
     /// 客户端更新标题时，重新导出 AI 预览。
-    fn title_changed(&mut self, _surface: ToplevelSurface) {
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        self.wm_state.refresh_toplevel_metadata(&surface);
         self.publish_ai_preview("title_changed");
     }
 }
