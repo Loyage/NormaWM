@@ -1,5 +1,6 @@
 /target
 /book
+/result
 **/*.swp
 **/*.swo
 .DS_Store

@@ -102,3 +102,20 @@ WAYLAND_DISPLAY=normawm-0 cargo run --bin test_window
 cargo run --bin norma -- msg windows
 cargo run --bin norma -- ctl input "hello from norma"
 ```
+
+## QEMU VM
+
+To run NormaWM inside a reproducible NixOS QEMU VM:
+
+```bash
+nix run .#vm
+```
+
+See [QEMU VM](./qemu-vm.md) for the full workflow.
+
+## Windows And macOS
+
+NormaWM is a Linux Wayland compositor prototype. Windows and macOS users should run it inside a
+Linux environment instead of expecting a native host window manager.
+
+See [Windows And macOS Setup](./non-linux-setup.md) for a from-zero setup path.

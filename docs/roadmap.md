@@ -49,3 +49,6 @@
 
 NormaWM currently uses a nested winit backend. Long-term work may include DRM/KMS backend support,
 but that should come after protocol, input, and window state are more mature.
+
+The current QEMU VM support validates the nested backend inside a guest graphical session. A future
+DRM/KMS VM should test NormaWM as the real compositor on a virtual GPU and tty.

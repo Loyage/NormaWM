@@ -26,6 +26,8 @@ compatible with mdBook through [`book.toml`](./book.toml).
 Important entry points:
 
 - [Getting Started](./docs/getting-started.md)
+- [Windows And macOS Setup](./docs/non-linux-setup.md)
+- [QEMU VM](./docs/qemu-vm.md)
 - [User Guide](./docs/user-guide.md)
 - [Command Line Interface](./docs/cli.md)
 - [Architecture](./docs/architecture.md)

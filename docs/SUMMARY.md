@@ -2,6 +2,8 @@
 
 - [Introduction](./introduction.md)
 - [Getting Started](./getting-started.md)
+- [Windows And macOS Setup](./non-linux-setup.md)
+- [QEMU VM](./qemu-vm.md)
 - [User Guide](./user-guide.md)
 - [Command Line Interface](./cli.md)
 - [Architecture](./architecture.md)

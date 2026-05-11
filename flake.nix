@@ -130,9 +130,13 @@
             buildInputs = runtimeLibs;
 
             postFixup = ''
-              wrapProgram $out/bin/normawm \
-                --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}:/run/opengl-driver/lib:/run/opengl-driver-32/lib" \
-                --set LIBGL_DRIVERS_PATH "/run/opengl-driver/lib/dri"
+              for bin in normawm normawm-control test_window; do
+                if [ -x "$out/bin/$bin" ]; then
+                  wrapProgram "$out/bin/$bin" \
+                    --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}:/run/opengl-driver/lib:/run/opengl-driver-32/lib" \
+                    --set LIBGL_DRIVERS_PATH "/run/opengl-driver/lib/dri"
+                fi
+              done
             '';
 
             meta = with pkgs.lib; {
@@ -145,13 +149,79 @@
 
       apps = forAllSystems (
         system:
+        let
+          lib = nixpkgs.lib;
+        in
         {
           default = {
             type = "app";
             program = "${self.packages.${system}.default}/bin/normawm";
           };
+        } // lib.optionalAttrs (system == "x86_64-linux") {
+          vm = {
+            type = "app";
+            program = "${self.nixosConfigurations.normawm-vm.config.system.build.vm}/bin/run-normawm-vm-vm";
+          };
         }
       );
+
+      nixosConfigurations.normawm-vm = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          (
+            { pkgs, ... }:
+            {
+              system.stateVersion = "25.05";
+
+              networking.hostName = "normawm-vm";
+
+              users.users.norma = {
+                isNormalUser = true;
+                password = "norma";
+                extraGroups = [
+                  "wheel"
+                  "video"
+                  "input"
+                ];
+              };
+
+              services.qemuGuest.enable = true;
+              services.xserver.enable = true;
+              services.xserver.desktopManager.xfce.enable = true;
+              services.xserver.displayManager.lightdm.enable = true;
+              services.displayManager.autoLogin = {
+                enable = true;
+                user = "norma";
+              };
+
+              hardware.graphics.enable = true;
+              programs.dconf.enable = true;
+
+              environment.systemPackages = [
+                self.packages.x86_64-linux.default
+                pkgs.mesa-demos
+                pkgs.wayland-utils
+                pkgs.xfce4-terminal
+                pkgs.xterm
+              ];
+
+              virtualisation.vmVariant = {
+                virtualisation = {
+                  cores = 2;
+                  memorySize = 3072;
+                  diskSize = 8192;
+                  qemu.options = [
+                    "-device"
+                    "virtio-vga"
+                    "-display"
+                    "gtk,gl=on"
+                  ];
+                };
+              };
+            }
+          )
+        ];
+      };
 
       formatter = forAllSystems (
         system:
