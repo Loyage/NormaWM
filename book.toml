@@ -1,0 +1,8 @@
+[book]
+title = "NormaWM Documentation"
+authors = ["NormaWM contributors"]
+language = "en"
+src = "docs"
+
+[output.html]
+git-repository-url = "https://example.invalid/NormaWM"

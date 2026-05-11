@@ -67,6 +67,7 @@
               pkgs.clang
               pkgs.just
               pkgs.lld
+              pkgs.mdbook
               pkgs.mesa-demos
               pkgs.llvmPackages.libclang
               pkgs.pkg-config
@@ -84,6 +85,7 @@
               echo "NormaWM dev shell ready."
               echo "Wayland runtime tools: wayland-info, eglinfo, glxinfo"
               echo "Build with: cargo check"
+              echo "Build docs with: mdbook build"
               echo "Run nested compositor with: cargo run"
             '';
           };
