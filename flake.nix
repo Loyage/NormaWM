@@ -130,7 +130,7 @@
             buildInputs = runtimeLibs;
 
             postFixup = ''
-              for bin in normawm normawm-control test_window; do
+              for bin in normawm test_window; do
                 if [ -x "$out/bin/$bin" ]; then
                   wrapProgram "$out/bin/$bin" \
                     --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath runtimeLibs}:/run/opengl-driver/lib:/run/opengl-driver-32/lib" \

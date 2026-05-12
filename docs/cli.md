@@ -32,6 +32,14 @@ Status:
 cargo run --bin norma -- msg status
 ```
 
+The status output includes compositor state and background monitor fields:
+
+```text
+monitor_uptime_ms
+monitor_commands_seen
+monitor_status_broadcasts
+```
+
 Windows:
 
 ```bash

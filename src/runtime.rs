@@ -3,17 +3,14 @@
 //! 这个模块负责把 backend、Wayland display、输入系统和 compositor 状态组装起来，
 //! 然后持续驱动事件循环、渲染循环以及 AI 预览刷新。
 
-use std::{
-    collections::HashSet,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use crate::{
     ai::{ActionResult, AiCommand, AiEvent, AiNexus},
     compositor::{ClientState, NormaApp, AI_PREVIEW_PATH, DEEP_GRAY},
     control::{launch_wayland_client, ControlCommand, ControlServer},
     error::NormaError,
+    monitor::BackgroundMonitor,
     wm::TilingState,
 };
 use ::winit::platform::pump_events::PumpStatus;
@@ -103,9 +100,9 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
         wm_state: TilingState::new(initial_size),
     };
     let start_time = Instant::now();
-    let mut last_control_status = Instant::now();
     let mut clients = Vec::new();
     let mut hotkeys = WorkspaceHotkeys::default();
+    let mut monitor = BackgroundMonitor::start();
     let mut control_server =
         ControlServer::bind_default().map_err(|error| NormaError::SocketBind(error.to_string()))?;
 
@@ -120,7 +117,7 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
     );
     info!(
         socket = %control_server.socket_path().display(),
-        "NormaWM human control socket is ready"
+        "NormaWM control socket and background monitor are ready"
     );
     info!(
         target: "normawm::ai_preview",
@@ -194,11 +191,13 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
         // 处理来自本地人类控制面的命令。人类控制优先级高于 AI 自动控制。
         let mut should_publish_control_status = false;
         for request in control_server.poll_commands() {
+            monitor.record_command();
             let client_id = request.client_id;
             match request.command {
                 ControlCommand::RequestStatus => {
-                    control_server.send_status_to(client_id, &state.control_status());
-                    should_publish_control_status = false;
+                    let mut status = state.control_status();
+                    monitor.enrich_status(&mut status);
+                    control_server.send_status_to(client_id, &status);
                 }
                 ControlCommand::RequestWindows => {
                     control_server.send_text_to(client_id, &format_windows(&state));
@@ -323,18 +322,18 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
             }
         }
 
-        if should_publish_control_status
-            || last_control_status.elapsed() >= Duration::from_millis(500)
-        {
-            control_server.broadcast_status(&state.control_status());
-            last_control_status = Instant::now();
+        if monitor.should_broadcast_status(should_publish_control_status) {
+            let mut status = state.control_status();
+            monitor.enrich_status(&mut status);
+            control_server.broadcast_status(&status);
+            monitor.record_status_broadcast();
         }
 
         // 处理来自 AI 接入面的命令。人类控制面暂停 AI 时，这些命令会被拒绝。
         for command in state.ai_nexus.drain_commands() {
             if state.ai_paused {
                 state.ai_nexus.emit(AiEvent::ActionResult(ActionResult::err(
-                    "AI control is paused by the human control panel",
+                    "AI control is paused by the human control plane",
                 )));
                 continue;
             }

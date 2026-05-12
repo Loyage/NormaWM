@@ -2,18 +2,18 @@
 
 读者对象：想实际使用当前 NormaWM prototype 的用户和开发者。
 
-本文覆盖范围：workspace、快捷键、普通应用、人类控制面。CLI 细节见
+本文覆盖范围：workspace、快捷键、普通应用、后台控制监控和 CLI。CLI 细节见
 [Command Line Interface](./cli.md)。
 
 ## Workspaces
 
 NormaWM uses numbered workspaces from `0` to `9`.
 
-- Workspace `0` is reserved for the human control surface.
+- Workspace `0` is reserved for future human-control surfaces.
 - Workspaces `1` through `9` are for normal application windows.
 - New normal windows are assigned to the next workspace and focused.
 - Rendering and keyboard focus apply only to the active workspace.
-- AI-visible window digests exclude the human control surface.
+- AI-visible window digests exclude windows identified as human-control surfaces.
 
 ## Keyboard Shortcuts
 
@@ -45,26 +45,18 @@ cargo run --bin norma -- ctl launch firefox
 
 The control-plane launch path injects the current NormaWM Wayland socket automatically.
 
-## Human Control Panel
+## Background Control Monitor
 
-The human control panel is a separate process. It is not AI-managed and is intended for manual
-supervision.
+NormaWM starts the control socket and monitor when the compositor starts. There is no separate
+control-panel frontend to launch. Use `norma` from a terminal to inspect and control the WM:
 
 ```bash
-cargo run --bin normawm-control
+cargo run --bin norma -- msg status
+cargo run --bin norma -- msg windows
+cargo run --bin norma -- ctl workspace 1
+cargo run --bin norma -- ctl ai pause
+cargo run --bin norma -- ctl input "hello from norma"
 ```
 
-Panel shortcuts:
-
-```text
-R      refresh status
-F      focus first window
-P      pause/resume AI control
-C      mark AI tasks cancelled
-T      launch test_window inside NormaWM
-Q      request compositor shutdown
-Esc    close only the control panel
-```
-
-When launched as a Wayland client into NormaWM, it is moved to workspace `0` and excluded from AI
-digests if identified as `normawm-control`.
+`norma msg status` includes monitor fields such as uptime, observed command count, and status
+broadcast count. These counters are maintained by the in-process background monitor.

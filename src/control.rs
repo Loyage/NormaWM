@@ -49,6 +49,14 @@ pub struct ControlStatus {
     pub ai_task_status: String,
     pub windows: Vec<ControlWindowInfo>,
     pub preview: String,
+    pub monitor: Option<ControlMonitorInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlMonitorInfo {
+    pub uptime_ms: u128,
+    pub commands_seen: u64,
+    pub status_broadcasts: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -412,6 +420,15 @@ fn send_status(stream: &mut UnixStream, status: &ControlStatus) -> io::Result<()
     writeln!(stream, "managed_windows: {}", status.managed_windows)?;
     writeln!(stream, "ai_paused: {}", status.ai_paused)?;
     writeln!(stream, "ai_task_status: {}", status.ai_task_status)?;
+    if let Some(monitor) = &status.monitor {
+        writeln!(stream, "monitor_uptime_ms: {}", monitor.uptime_ms)?;
+        writeln!(stream, "monitor_commands_seen: {}", monitor.commands_seen)?;
+        writeln!(
+            stream,
+            "monitor_status_broadcasts: {}",
+            monitor.status_broadcasts
+        )?;
+    }
     writeln!(stream, "windows:")?;
     for window in &status.windows {
         writeln!(

@@ -90,6 +90,7 @@ impl NormaApp {
             ai_task_status: self.ai_task_status.clone(),
             windows: self.wm_state.control_windows(),
             preview: self.build_ai_preview(),
+            monitor: None,
         }
     }
 

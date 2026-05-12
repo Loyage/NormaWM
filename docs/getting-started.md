@@ -2,7 +2,7 @@
 
 读者对象：想把 NormaWM 跑起来并做 smoke test 的开发者。
 
-本文覆盖范围：开发环境、构建、运行 compositor、启动测试窗口和控制工具。
+本文覆盖范围：开发环境、构建、运行 compositor、启动测试窗口和 `norma` 控制命令。
 
 ## Development Environment
 
@@ -63,25 +63,12 @@ MOZ_ENABLE_WAYLAND=1 WAYLAND_DISPLAY=normawm-0 firefox
 
 X11-only applications require Xwayland support, which is not implemented yet.
 
-## Run The Human Control Panel
-
-作为宿主窗口运行：
-
-```bash
-cargo run --bin normawm-control
-```
-
-作为 NormaWM 内部 0 号 workspace 窗口运行：
-
-```bash
-WAYLAND_DISPLAY=normawm-0 cargo run --bin normawm-control
-```
-
 ## Use The CLI
 
 开发期命令形式：
 
 ```bash
+cargo run --bin norma -- msg status
 cargo run --bin norma -- msg windows
 cargo run --bin norma -- ctl workspace 1
 cargo run --bin norma -- ctl input "hello from norma"
@@ -90,6 +77,7 @@ cargo run --bin norma -- ctl input "hello from norma"
 安装后的目标形式：
 
 ```bash
+norma msg status
 norma msg windows
 norma ctl input "hello from norma"
 ```
@@ -99,6 +87,7 @@ norma ctl input "hello from norma"
 ```bash
 cargo run
 WAYLAND_DISPLAY=normawm-0 cargo run --bin test_window
+cargo run --bin norma -- msg status
 cargo run --bin norma -- msg windows
 cargo run --bin norma -- ctl input "hello from norma"
 ```

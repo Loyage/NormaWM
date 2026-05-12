@@ -8,7 +8,6 @@ description = "NormaWM is a Smithay-based nested Wayland compositor with an AI-r
 publish = false
 
 [dependencies]
-font8x8 = "0.3.1"
 raw-window-handle = "0.6.2"
 softbuffer = "0.4.8"
 smithay = { version = "0.7.0", default-features = false, features = ["backend_winit", "renderer_gl", "wayland_frontend"] }

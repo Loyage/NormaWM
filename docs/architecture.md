@@ -13,7 +13,7 @@ NormaWM is split into a few explicit layers:
 - `wm`: owns window/workspace/focus layout state.
 - `control`: owns local IPC protocol and Unix socket server.
 - `ai`: owns AI command/event types and digest data.
-- `monitor`: owns the human control panel UI.
+- `monitor`: owns the in-process background control monitor.
 
 The main loop in `runtime::run_winit` coordinates these layers:
 
@@ -49,6 +49,12 @@ The main loop in `runtime::run_winit` coordinates these layers:
 
 External tools do not hold mutable references into this state. They send commands through the
 control socket or future AI channels.
+
+## Control Frontend Boundary
+
+There is no dedicated GUI frontend in the current architecture. The control backend starts with
+`normawm`, listens on the local Unix socket, and keeps monitor counters in-process. The user-facing
+frontend is the `norma` CLI, which sends `msg` and `ctl` commands over that socket.
 
 ## Why This Boundary Matters
 

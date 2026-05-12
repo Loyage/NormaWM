@@ -12,7 +12,7 @@ plane and an AI-ready command/event boundary.
 - Nested Wayland compositor using Smithay and winit.
 - Basic `xdg_toplevel` window management.
 - Numbered workspaces from `0` to `9`.
-- Standalone human control panel.
+- Background control monitor started with the compositor.
 - Local Unix socket control API.
 - `norma` CLI for querying and controlling the WM.
 - AI-readable window digest and command/event boundary.

@@ -66,6 +66,7 @@ WAYLAND_DISPLAY=normawm-0 test_window
 Query state:
 
 ```bash
+norma msg status
 norma msg windows
 ```
 
@@ -75,18 +76,11 @@ Input text:
 norma ctl input "hello from qemu"
 ```
 
-Start the human control panel:
-
-```bash
-normawm-control
-```
-
 ## Installed Tools
 
 The VM includes:
 
 - `normawm`
-- `normawm-control`
 - `norma`
 - `test_window`
 - `xfce4-terminal`
