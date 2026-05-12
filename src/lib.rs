@@ -5,6 +5,7 @@
 //! 2. `tests/` 中的集成测试直接复用窗口摘要与 AI 格式化逻辑
 
 pub mod ai;
+pub mod atspi;
 pub mod compositor;
 pub mod control;
 pub mod error;

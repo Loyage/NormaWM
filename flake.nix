@@ -41,6 +41,7 @@
             "rustfmt"
           ];
           runtimeLibs = with pkgs; [
+            at-spi2-core
             stdenv.cc.cc.lib
             libglvnd
             mesa
@@ -98,6 +99,7 @@
           pkgs = import nixpkgs { inherit system; };
           lib = pkgs.lib;
           runtimeLibs = with pkgs; [
+            at-spi2-core
             libglvnd
             mesa
             libdrm

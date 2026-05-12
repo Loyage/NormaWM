@@ -7,6 +7,7 @@ use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use crate::{
     ai::{ActionResult, AiCommand, AiEvent, AiNexus},
+    atspi::{query_window_accessibility_tree, JsonRectI32, WindowAccessibilityTarget},
     compositor::{ClientState, NormaApp, AI_PREVIEW_PATH, DEEP_GRAY},
     control::{launch_wayland_client, ControlCommand, ControlServer},
     error::NormaError,
@@ -14,6 +15,7 @@ use crate::{
     wm::TilingState,
 };
 use ::winit::platform::pump_events::PumpStatus;
+use serde::Serialize;
 use smithay::{
     backend::{
         input::{InputEvent, KeyState, KeyboardKeyEvent, Keycode},
@@ -30,9 +32,12 @@ use smithay::{
     },
     input::keyboard::FilterResult,
     reexports::wayland_server::Display,
-    utils::{Logical, Rectangle, Size, Transform},
+    utils::{Logical, Point, Rectangle, Size, Transform},
     wayland::{
-        compositor::{with_surface_tree_downward, SurfaceAttributes, TraversalAction},
+        compositor::{
+            get_children, get_role, with_states, with_surface_tree_downward, SurfaceAttributes,
+            TraversalAction,
+        },
         selection::data_device::{set_data_device_focus, set_data_device_selection},
         shell::xdg::XdgShellState,
         shm::ShmState,
@@ -207,6 +212,12 @@ pub fn run_winit(ai_nexus: AiNexus) -> Result<(), NormaError> {
                 }
                 ControlCommand::RequestFocusedWindow => {
                     control_server.send_text_to(client_id, &format_focused_window(&state));
+                }
+                ControlCommand::RequestWindow(window_id) => {
+                    match format_window_accessibility_composition(&state, &window_id) {
+                        Ok(json) => control_server.send_text_to(client_id, &json),
+                        Err(error) => control_server.send_result_to(client_id, false, &error),
+                    }
                 }
                 ControlCommand::FocusWindow(window_id) => {
                     if let Some(surface) = state.wm_state.focus_window_id(&window_id) {
@@ -582,6 +593,336 @@ fn format_focused_window(state: &NormaApp) -> String {
         .focused_window_id()
         .map(str::to_string)
         .unwrap_or_else(|| "no focused window".to_string())
+}
+
+fn format_window_accessibility_composition(
+    state: &NormaApp,
+    window_id: &str,
+) -> Result<String, String> {
+    let window_info = state
+        .wm_state
+        .control_windows()
+        .into_iter()
+        .find(|window| window.id == window_id)
+        .ok_or_else(|| format!("unknown window id: {window_id}"))?;
+    let managed_window = state
+        .wm_state
+        .windows()
+        .iter()
+        .find(|window| window.id == window_id && window.surface.alive())
+        .ok_or_else(|| format!("unknown window id: {window_id}"))?;
+
+    let target = WindowAccessibilityTarget {
+        id: window_info.id,
+        workspace: window_info.workspace,
+        title: window_info.title,
+        app_id: window_info.app_id,
+        focused: window_info.focused,
+        human_control: window_info.human_control,
+        visible: managed_window.workspace == state.wm_state.active_workspace(),
+        layout_geometry: JsonRectI32 {
+            x: managed_window.geometry.loc.x,
+            y: managed_window.geometry.loc.y,
+            width: managed_window.geometry.size.w,
+            height: managed_window.geometry.size.h,
+        },
+    };
+
+    let composition = match query_window_accessibility_tree(target.clone()) {
+        Ok(composition) => WindowInspectionResponse::from_atspi(composition),
+        Err(reason) => build_surface_tree_response(target, managed_window, reason),
+    };
+
+    serde_json::to_string_pretty(&composition)
+        .map_err(|error| format!("failed to serialize window composition: {error}"))
+}
+
+fn build_surface_tree_response(
+    window: WindowAccessibilityTarget,
+    managed_window: &crate::wm::ManagedToplevel,
+    reason: String,
+) -> WindowInspectionResponse {
+    let mut surfaces = Vec::new();
+    collect_surface_composition(
+        managed_window.surface.wl_surface(),
+        None,
+        0,
+        managed_window.geometry.loc,
+        &mut surfaces,
+    );
+
+    WindowInspectionResponse {
+        window: WindowInspectionWindow::from(window),
+        inspection: WindowInspection::SurfaceTree {
+            reason,
+            surface_count: surfaces.len(),
+            surfaces,
+        },
+    }
+}
+
+fn collect_surface_composition(
+    surface: &wl_surface::WlSurface,
+    parent_index: Option<usize>,
+    depth: usize,
+    base_location: Point<i32, Logical>,
+    surfaces: &mut Vec<SurfaceNode>,
+) {
+    let snapshot = surface_render_snapshot(surface);
+    let absolute_location = Point::from((
+        base_location.x + snapshot.local_offset.x,
+        base_location.y + snapshot.local_offset.y,
+    ));
+    let index = surfaces.len();
+
+    surfaces.push(SurfaceNode {
+        index,
+        parent_index,
+        depth,
+        role: get_role(surface).unwrap_or("unassigned").to_string(),
+        alive: surface.is_alive(),
+        absolute_location: JsonPointI32::from(absolute_location),
+        local_offset: JsonPointI32::from(snapshot.local_offset),
+        mapped: snapshot.mapped,
+        buffer: snapshot.buffer,
+        view: snapshot.view,
+        pending_frame_callbacks: snapshot.pending_frame_callbacks,
+        pending_damage_count: snapshot.pending_damage_count,
+    });
+
+    if !snapshot.traverse_children {
+        return;
+    }
+
+    for child in get_children(surface) {
+        collect_surface_composition(&child, Some(index), depth + 1, absolute_location, surfaces);
+    }
+}
+
+fn surface_render_snapshot(surface: &wl_surface::WlSurface) -> SurfaceSnapshot {
+    with_states(surface, |states| {
+        let mut attrs_guard = states.cached_state.get::<SurfaceAttributes>();
+        let attrs = attrs_guard.current();
+        let pending_frame_callbacks = attrs.frame_callbacks.len();
+        let pending_damage_count = attrs.damage.len();
+
+        let Some(renderer_data) = states
+            .data_map
+            .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>(
+        ) else {
+            return SurfaceSnapshot {
+                pending_frame_callbacks,
+                pending_damage_count,
+                ..SurfaceSnapshot::default()
+            };
+        };
+        let Ok(renderer_state) = renderer_data.lock() else {
+            return SurfaceSnapshot {
+                pending_frame_callbacks,
+                pending_damage_count,
+                ..SurfaceSnapshot::default()
+            };
+        };
+
+        let view = renderer_state.view().map(SurfaceViewInfo::from);
+        let local_offset = view
+            .as_ref()
+            .map(|view| view.offset.to_point())
+            .unwrap_or_else(|| Point::from((0, 0)));
+        let mapped = renderer_state.buffer().is_some() && view.is_some();
+        let buffer = renderer_state.buffer().map(|_| SurfaceBufferInfo {
+            surface_width: renderer_state.surface_size().map(|size| size.w),
+            surface_height: renderer_state.surface_size().map(|size| size.h),
+            buffer_width: renderer_state.buffer_size().map(|size| size.w),
+            buffer_height: renderer_state.buffer_size().map(|size| size.h),
+            buffer_scale: renderer_state.buffer_scale(),
+            buffer_transform: format!("{:?}", renderer_state.buffer_transform()),
+        });
+
+        SurfaceSnapshot {
+            mapped,
+            traverse_children: view.is_some(),
+            local_offset,
+            buffer,
+            view,
+            pending_frame_callbacks,
+            pending_damage_count,
+        }
+    })
+}
+
+#[derive(Debug, Default)]
+struct SurfaceSnapshot {
+    mapped: bool,
+    traverse_children: bool,
+    local_offset: Point<i32, Logical>,
+    buffer: Option<SurfaceBufferInfo>,
+    view: Option<SurfaceViewInfo>,
+    pending_frame_callbacks: usize,
+    pending_damage_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct WindowInspectionResponse {
+    window: WindowInspectionWindow,
+    inspection: WindowInspection,
+}
+
+impl WindowInspectionResponse {
+    fn from_atspi(composition: crate::atspi::WindowAccessibilityComposition) -> Self {
+        Self {
+            window: WindowInspectionWindow::from(composition.window),
+            inspection: WindowInspection::Atspi {
+                matched_by: composition.accessibility.matched_by,
+                applications_seen: composition.accessibility.applications_seen,
+                node_count: composition.accessibility.node_count,
+                truncated: composition.accessibility.truncated,
+                tree: composition.accessibility.tree,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct WindowInspectionWindow {
+    id: String,
+    workspace: u8,
+    title: Option<String>,
+    app_id: Option<String>,
+    focused: bool,
+    human_control: bool,
+    visible: bool,
+    layout_geometry: JsonRectI32,
+}
+
+impl From<WindowAccessibilityTarget> for WindowInspectionWindow {
+    fn from(target: WindowAccessibilityTarget) -> Self {
+        Self {
+            id: target.id,
+            workspace: target.workspace,
+            title: target.title,
+            app_id: target.app_id,
+            focused: target.focused,
+            human_control: target.human_control,
+            visible: target.visible,
+            layout_geometry: target.layout_geometry,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "protocol", rename_all = "kebab-case")]
+enum WindowInspection {
+    Atspi {
+        matched_by: String,
+        applications_seen: Vec<crate::atspi::AtspiApplicationSummary>,
+        node_count: usize,
+        truncated: bool,
+        tree: crate::atspi::AtspiNode,
+    },
+    SurfaceTree {
+        reason: String,
+        surface_count: usize,
+        surfaces: Vec<SurfaceNode>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct SurfaceNode {
+    index: usize,
+    parent_index: Option<usize>,
+    depth: usize,
+    role: String,
+    alive: bool,
+    absolute_location: JsonPointI32,
+    local_offset: JsonPointI32,
+    mapped: bool,
+    buffer: Option<SurfaceBufferInfo>,
+    view: Option<SurfaceViewInfo>,
+    pending_frame_callbacks: usize,
+    pending_damage_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct SurfaceBufferInfo {
+    surface_width: Option<i32>,
+    surface_height: Option<i32>,
+    buffer_width: Option<i32>,
+    buffer_height: Option<i32>,
+    buffer_scale: i32,
+    buffer_transform: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SurfaceViewInfo {
+    src: JsonRectF64,
+    dst: JsonSizeI32,
+    offset: JsonPointI32,
+}
+
+impl From<smithay::backend::renderer::utils::SurfaceView> for SurfaceViewInfo {
+    fn from(view: smithay::backend::renderer::utils::SurfaceView) -> Self {
+        Self {
+            src: JsonRectF64::from(view.src),
+            dst: JsonSizeI32::from(view.dst),
+            offset: JsonPointI32::from(view.offset),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JsonRectF64 {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+impl From<Rectangle<f64, Logical>> for JsonRectF64 {
+    fn from(rect: Rectangle<f64, Logical>) -> Self {
+        Self {
+            x: rect.loc.x,
+            y: rect.loc.y,
+            width: rect.size.w,
+            height: rect.size.h,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JsonSizeI32 {
+    width: i32,
+    height: i32,
+}
+
+impl From<Size<i32, Logical>> for JsonSizeI32 {
+    fn from(size: Size<i32, Logical>) -> Self {
+        Self {
+            width: size.w,
+            height: size.h,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JsonPointI32 {
+    x: i32,
+    y: i32,
+}
+
+impl JsonPointI32 {
+    fn to_point(&self) -> Point<i32, Logical> {
+        Point::from((self.x, self.y))
+    }
+}
+
+impl From<Point<i32, Logical>> for JsonPointI32 {
+    fn from(point: Point<i32, Logical>) -> Self {
+        Self {
+            x: point.x,
+            y: point.y,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

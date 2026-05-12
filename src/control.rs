@@ -20,6 +20,7 @@ pub enum ControlCommand {
     RequestWindows,
     RequestWorkspaces,
     RequestFocusedWindow,
+    RequestWindow(String),
     FocusFirstWindow,
     FocusWindow(String),
     SwitchWorkspace(u8),
@@ -291,6 +292,15 @@ fn parse_command(line: &str) -> Result<ControlCommand, String> {
         "MSG_WINDOWS" => Ok(ControlCommand::RequestWindows),
         "MSG_WORKSPACES" => Ok(ControlCommand::RequestWorkspaces),
         "MSG_FOCUSED_WINDOW" => Ok(ControlCommand::RequestFocusedWindow),
+        "MSG_WINDOW" => {
+            let Some(window_id) = parts.next() else {
+                return Err("MSG_WINDOW requires a window id".to_string());
+            };
+            if parts.next().is_some() {
+                return Err("MSG_WINDOW takes exactly one window id".to_string());
+            }
+            Ok(ControlCommand::RequestWindow(window_id.to_string()))
+        }
         "FOCUS_FIRST" => Ok(ControlCommand::FocusFirstWindow),
         "FOCUS_WINDOW" => {
             let Some(window_id) = parts.next() else {

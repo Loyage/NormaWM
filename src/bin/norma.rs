@@ -29,6 +29,7 @@ fn run() -> Result<(), String> {
     print_response(&response)
 }
 
+#[derive(Debug)]
 struct Request {
     header: String,
     payload: Option<String>,
@@ -48,8 +49,16 @@ fn build_msg_request(args: &[String]) -> Result<Request, String> {
         Some("windows") => line_request("MSG_WINDOWS"),
         Some("workspaces") => line_request("MSG_WORKSPACES"),
         Some("focused-window") => line_request("MSG_FOCUSED_WINDOW"),
-        _ => Err("usage: norma msg <status|windows|workspaces|focused-window>".to_string()),
+        Some("window") => build_msg_window_request(&args[1..]),
+        _ => Err("usage: norma msg <status|windows|workspaces|focused-window|window>".to_string()),
     }
+}
+
+fn build_msg_window_request(args: &[String]) -> Result<Request, String> {
+    let window = parse_window_arg(args)
+        .map_err(|_| "usage: norma msg window --window <window-id>".to_string())?
+        .ok_or_else(|| "usage: norma msg window --window <window-id>".to_string())?;
+    line_request(format!("MSG_WINDOW {window}"))
 }
 
 fn build_ctl_request(args: &[String]) -> Result<Request, String> {
@@ -237,6 +246,7 @@ fn usage() -> String {
         "  norma msg windows",
         "  norma msg workspaces",
         "  norma msg focused-window",
+        "  norma msg window --window <window-id>",
         "  norma ctl focus --window <window-id>",
         "  norma ctl workspace <0..9>",
         "  norma ctl launch <program> [args...]",
@@ -246,4 +256,37 @@ fn usage() -> String {
         "  norma ctl shutdown",
     ]
     .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn msg_window_builds_request() {
+        let request = build_request(&args(&["msg", "window", "--window", "window-1"]))
+            .expect("request should parse");
+
+        assert_eq!(request.header, "MSG_WINDOW window-1");
+        assert_eq!(request.payload, None);
+    }
+
+    #[test]
+    fn msg_window_requires_window_flag() {
+        let error = build_request(&args(&["msg", "window"])).expect_err("request should fail");
+
+        assert_eq!(error, "usage: norma msg window --window <window-id>");
+    }
+
+    #[test]
+    fn msg_window_rejects_extra_args() {
+        let error = build_request(&args(&["msg", "window", "--window", "window-1", "extra"]))
+            .expect_err("request should fail");
+
+        assert_eq!(error, "usage: norma msg window --window <window-id>");
+    }
 }

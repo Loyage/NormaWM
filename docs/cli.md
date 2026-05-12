@@ -58,6 +58,78 @@ Focused window:
 cargo run --bin norma -- msg focused-window
 ```
 
+Window accessibility composition:
+
+```bash
+cargo run --bin norma -- msg window --window window-1
+```
+
+This returns JSON for the selected window. The payload includes top-level WM metadata and either
+an AT-SPI2 accessibility tree or, if AT-SPI2 is unavailable, a fallback `surface-tree` view built
+from the compositor's own surface state:
+
+```json
+{
+  "window": {
+    "id": "window-1",
+    "workspace": 1,
+    "title": "Example",
+    "app_id": "example",
+    "focused": true,
+    "human_control": false,
+    "visible": true,
+    "layout_geometry": { "x": 24, "y": 24, "width": 752, "height": 552 }
+  },
+  "accessibility": {
+    "protocol": "at-spi2",
+    "matched_by": "title_exact+window_role",
+    "applications_seen": [
+      {
+        "bus_name": ":1.42",
+        "path": "/org/a11y/atspi/accessible/root",
+        "name": "Example",
+        "role": "application",
+        "child_count": 1
+      }
+    ],
+    "node_count": 12,
+    "truncated": false,
+    "tree": {
+      "bus_name": ":1.42",
+      "path": "/org/a11y/atspi/accessible/root/window/0",
+      "depth": 1,
+      "name": "Example",
+      "role": "frame",
+      "role_debug": "Frame",
+      "description": null,
+      "child_count": 2,
+      "interfaces": ["Accessible", "Component"],
+      "attributes": {},
+      "component": {
+        "screen_extents": { "x": 24, "y": 24, "width": 752, "height": 552 },
+        "window_extents": { "x": 0, "y": 0, "width": 752, "height": 552 },
+        "alpha": 1.0,
+        "layer": "Widget",
+        "mdi_z_order": 0
+      },
+      "children": [],
+      "errors": []
+    }
+  }
+}
+```
+
+If the window ID does not exist, the command returns an error response. If the client does not
+expose a matching AT-SPI2 tree, the command falls back to the compositor's own surface tree.
+That fallback is a structural view of the Wayland surfaces, not accessibility metadata.
+
+Runtime notes:
+
+- The host session may have an AT-SPI2 registry available.
+- Applications only appear in the AT-SPI2 branch if they expose accessibility metadata.
+- Some toolkits may require accessibility to be enabled before they publish useful object trees.
+- If accessibility data is missing, the command falls back to the compositor surface tree.
+
 ## Control Commands
 
 Focus a window:
@@ -122,4 +194,6 @@ Implementation notes:
 
 ## Output Format
 
-The first version prints human-readable text. There is no `--json` mode yet.
+Most commands print human-readable text. `norma msg window --window <window-id>` prints JSON from
+AT-SPI2 because its output is intended for scripts, debuggers, and future browser-based control
+frontends.
